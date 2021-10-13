@@ -3,6 +3,7 @@ package message
 import (
 	"bytes"
 	"encoding/gob"
+	"net"
 )
 
 // The Message type has unexported fields, which the package cannot access.
@@ -25,6 +26,8 @@ const (
 
 type Message struct {
 	Headers byte
+	SrcIP   net.UDPAddr
+	DstIP   net.UDPAddr
 	Data    []byte
 }
 
@@ -41,6 +44,10 @@ func (msg Message) GetHeaders() byte {
 
 func (msg Message) HasData() bool {
 	return msg.Headers&DATA == DATA
+}
+
+func (msg Message) IsAck() bool {
+	return msg.Headers&ACK == ACK
 }
 
 func (msg Message) Binary() ([]byte, error) {
