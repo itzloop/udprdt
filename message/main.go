@@ -26,6 +26,7 @@ const (
 
 type Message struct {
 	Headers byte
+	Seq     uint64
 	SrcIP   net.UDPAddr
 	DstIP   net.UDPAddr
 	Data    []byte

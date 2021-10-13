@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"sync/atomic"
 
 	"github.com/sinashk78/go-p2p-udp/message"
 )
@@ -72,9 +73,10 @@ type Msg struct {
 
 type Peer struct {
 	conn          *net.UDPConn
+	seq           uint64
 	sendChannel   chan message.Message
 	recvChannel   chan []byte
-	messageBuffer []message.Message
+	messageBuffer [100]message.Message
 }
 
 func NewPeer(addr string) (*Peer, error) {
@@ -90,6 +92,7 @@ func NewPeer(addr string) (*Peer, error) {
 
 	peer := &Peer{
 		conn:        conn,
+		seq:         0,
 		sendChannel: make(chan message.Message),
 		recvChannel: make(chan []byte),
 	}
@@ -109,11 +112,13 @@ func (p *Peer) reciver() {
 		}
 
 		if msg.IsAck() {
-			fmt.Println("recived ack")
+			fmt.Println("control recived ack for message ", msg.Seq)
 			continue
 		}
 
-		p.sendAck(*addr)
+		p.sendAck(msg.Seq, *addr)
+
+		fmt.Println("control: recived message ", msg.Seq)
 
 		p.recvChannel <- msg.Data
 	}
@@ -121,7 +126,8 @@ func (p *Peer) reciver() {
 
 func (p *Peer) sender() {
 	for {
-		if err := p.sendUDP(<-p.sendChannel); err != nil {
+		msg := <-p.sendChannel
+		if err := p.sendUDP(msg); err != nil {
 			fmt.Println("something went wrong", err)
 			continue
 		}
@@ -153,8 +159,9 @@ func (p *Peer) sendUDP(msg message.Message) error {
 	return err
 }
 
-func (p *Peer) sendAck(addr net.UDPAddr) error {
+func (p *Peer) sendAck(seq uint64, addr net.UDPAddr) error {
 	return p.sendUDP(message.Message{
+		Seq:     seq,
 		Headers: message.ACK,
 		DstIP:   addr,
 	})
@@ -162,6 +169,7 @@ func (p *Peer) sendAck(addr net.UDPAddr) error {
 
 func (p *Peer) Write(data []byte, addr net.UDPAddr) (int, error) {
 	p.sendChannel <- message.Message{
+		Seq:     atomic.AddUint64(&p.seq, 1),
 		Headers: message.DATA,
 		DstIP:   addr,
 		Data:    data,
