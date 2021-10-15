@@ -12,6 +12,18 @@ import (
 	"github.com/sinashk78/go-p2p-udp/rdt"
 )
 
+const (
+	colorReset = "\033[0m"
+
+	colorRed = "\033[31m"
+	colorGreen = "\033[32m"
+	colorYellow = "\033[33m"
+	colorBlue = "\033[34m"
+	colorPurple = "\033[35m"
+	colorCyan = "\033[36m"
+	colorWhite = "\033[37m"
+)
+
 func main() {
 	log.SetOutput(os.Stdout)
 	addr := os.Args[1]
@@ -22,7 +34,7 @@ func main() {
 		panic(err)
 	}
 
-	reliableDataTransfer := rdt.NewSelectiveRepeateUdpRdt(100, 100, 5, time.Second, udt)
+	reliableDataTransfer := rdt.NewSelectiveRepeateUdpRdt(100, 100, 5, time.Second * 5, udt)
 
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt)
@@ -46,7 +58,7 @@ loop:
 			log.Println("exiting application")
 			break loop
 		case data := <-recvChannel:
-			fmt.Println(string(data))
+			fmt.Print(colorCyan, peer, " says: ", string(data), colorReset)
 		case data := <-cliChannel:
 			sendChannel <- data
 		}
@@ -65,8 +77,6 @@ func receiver(reliableDataTransfer rdt.RDT) (<-chan []byte, error) {
 				fmt.Println("man.go: something went wrong: ", err)
 				continue
 			}
-
-			fmt.Println("main.go: received message: ", string(data))
 
 			channel <- data
 		}

@@ -1,3 +1,3 @@
-module github.com/sinashk78/go-p2p-udp
+module github.com/sinashk78/udprdt
 
 go 1.17
