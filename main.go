@@ -7,44 +7,94 @@ import (
 	"net"
 	"os"
 	"os/signal"
-	"sync/atomic"
+	"time"
 
-	"github.com/sinashk78/go-p2p-udp/message"
+	"github.com/sinashk78/go-p2p-udp/rdt"
 )
 
 func main() {
 	log.SetOutput(os.Stdout)
-	port := os.Args[1]
-	addr := ":" + port
+	addr := os.Args[1]
 	peer := os.Args[2]
-	self, err := NewPeer(addr)
+
+	udt, err := rdt.NewUdpUdt(addr)
 	if err != nil {
-		log.Panicln(err)
+		panic(err)
 	}
+
+	reliableDataTransfer := rdt.NewSelectiveRepeateUdpRdt(100, 100, 5, time.Second, udt)
 
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt)
-	cli := cli()
+	cliChannel := cli()
+
+	recvChannel, err := receiver(reliableDataTransfer)
+	if err != nil {
+		panic(err)
+	}
+
+	sendChannel := make(chan []byte)
+	err = sender(reliableDataTransfer, sendChannel, peer)
+	if err != nil {
+		panic(err)
+	}
+
 loop:
 	for {
 		select {
 		case <-c:
-			log.Println("done")
+			log.Println("exiting application")
 			break loop
-		case data := <-self.RecvChannel():
-			fmt.Print("recived:", string(data))
-		case msg := <-cli:
-			addr, err := net.ResolveUDPAddr("udp", peer)
-			if err != nil {
-				log.Println(err)
-				break loop
-			}
-
-			self.Write(msg, *addr)
+		case data := <-recvChannel:
+			fmt.Println(string(data))
+		case data := <-cliChannel:
+			sendChannel <- data
 		}
 	}
 
 	close(c)
+}
+
+func receiver(reliableDataTransfer rdt.RDT) (<-chan []byte, error) {
+	channel := make(chan []byte)
+	go func() {
+		for {
+			// TODO this is not preemptive
+			data, err := reliableDataTransfer.RdtRecv()
+			if err != nil {
+				fmt.Println("man.go: something went wrong: ", err)
+				continue
+			}
+
+			fmt.Println("main.go: received message: ", string(data))
+
+			channel <- data
+		}
+	}()
+
+	return channel, nil
+}
+
+func sender(reliableDataTransfer rdt.RDT, channel <-chan []byte, addr string) error {
+	sendAddr, err := net.ResolveUDPAddr("udp", addr)
+	if err != nil {
+		return err
+	}
+	go func() {
+		for {
+			// TODO this is not preemptive
+			select {
+			case data := <-channel:
+				_, err := reliableDataTransfer.RdtSend(data, sendAddr)
+				if err != nil {
+					fmt.Println("man.go: something went wrong: ", err)
+					continue
+				}
+			}
+		}
+	}()
+
+	return nil
 }
 
 func cli() <-chan []byte {
@@ -64,125 +114,4 @@ func cli() <-chan []byte {
 	}()
 
 	return channel
-}
-
-type Msg struct {
-	addr    net.UDPAddr
-	payload []byte
-}
-
-type Peer struct {
-	conn          *net.UDPConn
-	seq           uint64
-	sendChannel   chan message.Message
-	recvChannel   chan []byte
-	messageBuffer [100]message.Message
-}
-
-func NewPeer(addr string) (*Peer, error) {
-	laddr, err := net.ResolveUDPAddr("udp", addr)
-	if err != nil {
-		return nil, err
-	}
-
-	conn, err := net.ListenUDP("udp", laddr)
-	if err != nil {
-		return nil, err
-	}
-
-	peer := &Peer{
-		conn:        conn,
-		seq:         0,
-		sendChannel: make(chan message.Message),
-		recvChannel: make(chan []byte),
-	}
-
-	go peer.reciver()
-	go peer.sender()
-	return peer, nil
-}
-
-func (p *Peer) reciver() {
-	for {
-
-		msg, addr, err := p.recvUDP()
-		if err != nil {
-			fmt.Println("something went wrong", err)
-			continue
-		}
-
-		if msg.IsAck() {
-			fmt.Println("control recived ack for message ", msg.Seq)
-			continue
-		}
-
-		p.sendAck(msg.Seq, *addr)
-
-		fmt.Println("control: recived message ", msg.Seq)
-
-		p.recvChannel <- msg.Data
-	}
-}
-
-func (p *Peer) sender() {
-	for {
-		msg := <-p.sendChannel
-		if err := p.sendUDP(msg); err != nil {
-			fmt.Println("something went wrong", err)
-			continue
-		}
-	}
-}
-
-func (p *Peer) recvUDP() (*message.Message, *net.UDPAddr, error) {
-	buffer := make([]byte, 1024)
-	_, addr, err := p.conn.ReadFromUDP(buffer)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	msg, err := message.Decode(buffer)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return msg, addr, nil
-}
-
-func (p *Peer) sendUDP(msg message.Message) error {
-	binaryMessage, err := msg.Binary()
-	if err != nil {
-		return err
-	}
-
-	_, err = p.conn.WriteToUDP(binaryMessage, &msg.DstIP)
-	return err
-}
-
-func (p *Peer) sendAck(seq uint64, addr net.UDPAddr) error {
-	return p.sendUDP(message.Message{
-		Seq:     seq,
-		Headers: message.ACK,
-		DstIP:   addr,
-	})
-}
-
-func (p *Peer) Write(data []byte, addr net.UDPAddr) (int, error) {
-	p.sendChannel <- message.Message{
-		Seq:     atomic.AddUint64(&p.seq, 1),
-		Headers: message.DATA,
-		DstIP:   addr,
-		Data:    data,
-	}
-	return len(data), nil
-}
-
-// func (p *Peer) Read(buffer []byte) (int, error) {
-//   msg := <-p.recvChannel
-//   bytes.NewBuffer()
-
-// }
-
-func (p *Peer) RecvChannel() <-chan []byte {
-	return p.recvChannel
 }
