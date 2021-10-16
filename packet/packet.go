@@ -3,9 +3,10 @@ package packet
 import (
 	"bytes"
 	"fmt"
-	"github.com/sinashk78/go-p2p-udp/utils"
+	"github.com/sinashk78/udprdt/utils"
 )
 
+// HeaderSize is Ack + Sequence + DataLength = 1 + 4 + 4 = 9 bytes
 const HeaderSize uint32 = 9
 
 // HeaderFlags is the first byte of each PacketHeader
@@ -43,20 +44,24 @@ type PacketHeader struct {
 	DataLength uint32
 }
 
+// String will return the string representation of a PacketHeader
 func (p PacketHeader) String() string {
 	return fmt.Sprintf("{%v, %d, %d}", p.Ack, p.Sequence, p.DataLength)
 }
 
-// Packet
+// Packet wraps Data and Headers this is the lowest strust
+// that will be sent through the network
 type Packet struct {
 	Headers PacketHeader
 	Data    []byte
 }
 
+// IsAck is HeaderFlags for an acknowledgement packet
 func (flags HeaderFlags) IsAck() bool {
 	return flags&ACK == 1
 }
 
+// UnMarshalHeader, converts data to PacketHeader and returns an error if failed
 func UnMarshalHeader(data []byte) (*PacketHeader, error) {
 	if len(data) < 5 {
 		return nil, fmt.Errorf("packet.go: wrong packet size: %d", len(data))
@@ -78,6 +83,7 @@ func UnMarshalHeader(data []byte) (*PacketHeader, error) {
 	return header, nil
 }
 
+// Marshal, converts a PacketHeader to binary
 func (header PacketHeader) Marshal() ([]byte, error) {
 	var buf bytes.Buffer
 	flags := HeaderFlags(0)
@@ -117,6 +123,7 @@ func (header PacketHeader) Marshal() ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// UnMarshalPacket, converts data to Packet
 func UnMarshalPacket(data []byte) (*Packet, error) {
 	header, err := UnMarshalHeader(data[:9])
 	if err != nil {
@@ -133,6 +140,7 @@ func UnMarshalPacket(data []byte) (*Packet, error) {
 	return &packet, err
 }
 
+// Marshal converts Packet to binary and returns and error if failed
 func (packet Packet) Marshal() ([]byte, error) {
 	var buf bytes.Buffer
 

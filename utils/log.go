@@ -29,15 +29,15 @@ func init() {
 		return
 	}
 
-	if len(os.Args) > 3 && os.Args[3] == "debug"{
+	if len(os.Args) > 3 && os.Args[3] == "debug" {
 		debug = true
 	}
 
 	logger = log.New(fd, "", log.LstdFlags)
 }
 
-
-
+// Printf prints to fd with logger the reason for this is to redirect debug
+// logs to a file and don't occupy stdout
 func Printf(format string, args ...interface{}) {
 	if !debug {
 		return

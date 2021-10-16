@@ -2,25 +2,31 @@ package rdt
 
 import (
 	"fmt"
-	"github.com/sinashk78/go-p2p-udp/utils"
+	"github.com/sinashk78/udprdt/utils"
 	"net"
 	"sync"
 	"time"
 
-	"github.com/sinashk78/go-p2p-udp/packet"
+	"github.com/sinashk78/udprdt/packet"
 )
 
+// RDT contains the basic functionality of an reliable channel
 type RDT interface {
 	RdtSend([]byte, net.Addr) (int, error)
 	RdtRecv() ([]byte, error)
 }
 
+// packetWrapper adds destAddr and a timer to each packet.Packet
+// these additional fields are used by RDT to handle some stuff
 type packetWrapper struct {
 	pkt      packet.Packet
 	destAddr net.Addr
 	timer    *time.Timer
 }
 
+// SelectiveRepeatUdpRdt is an implementation of RDT which uses the
+// Selective Repeat method for handling multiple packets not just one
+// at a time like the stop and wait approach
 type SelectiveRepeatUdpRdt struct {
 	sendBase    uint32
 	sendNextSeq uint32
@@ -40,6 +46,7 @@ type SelectiveRepeatUdpRdt struct {
 	udt UDT
 }
 
+// NewSelectiveRepeateUdpRdt create a new NewSelectiveRepeateUdpRdt
 func NewSelectiveRepeateUdpRdt(sendMaxBuf, recvMaxBuf, windowSize uint32, timeout time.Duration, udt UDT) RDT {
 	return &SelectiveRepeatUdpRdt{
 		sendBase:    1,
@@ -57,6 +64,7 @@ func NewSelectiveRepeateUdpRdt(sendMaxBuf, recvMaxBuf, windowSize uint32, timeou
 	}
 }
 
+// RdtSend sends data through a reliable data channel to addr
 func (rdt *SelectiveRepeatUdpRdt) RdtSend(data []byte, addr net.Addr) (int, error) {
 	rdt.sendLock.Lock()
 	defer rdt.sendLock.Unlock()
@@ -67,22 +75,28 @@ func (rdt *SelectiveRepeatUdpRdt) RdtSend(data []byte, addr net.Addr) (int, erro
 		return 0, fmt.Errorf("rdt.go: too many packet in the buffer")
 	}
 
+	// save the packet to recvBuffer
 	idx := rdt.sendNextSeq % rdt.sendMaxBuf
 	seq := rdt.sendNextSeq
 	rdt.sendBuffer[idx] = packetWrapper{
 		pkt:      packet.Packet{Headers: packet.PacketHeader{Sequence: rdt.sendNextSeq, DataLength: uint32(len(data))}, Data: data},
 		destAddr: addr,
-		timer:    time.AfterFunc(rdt.timeout, func() {
+		timer: time.AfterFunc(rdt.timeout, func() {
 			rdt.Timeout(seq)
 		}),
 	}
+
+	// convert the packet to slice of byte (binary)
 	binPkt, err := rdt.sendBuffer[idx].pkt.Marshal()
 	if err != nil {
 		return 0, err
 	}
 
-	if rdt.sendNextSeq % 2 != 0 {
+	// to test the retransmission, the receiver will not send ack for packets
+	// with sequence of odd
+	if rdt.sendNextSeq%2 != 0 {
 		utils.Printf("rdt.go: attempting to send packet: %d\n", rdt.sendNextSeq)
+		// send the binary data through the unreliable data channel to addr
 		_, err = rdt.udt.UdtSend(binPkt, addr)
 		if err != nil {
 			return 0, err
@@ -93,6 +107,7 @@ func (rdt *SelectiveRepeatUdpRdt) RdtSend(data []byte, addr net.Addr) (int, erro
 		utils.Printf("rdt.go: not sending packet %d to test retransmission\n", rdt.sendNextSeq)
 	}
 
+	// stop the timer if this condition meet
 	if rdt.sendBase == rdt.sendNextSeq {
 		rdt.sendBuffer[idx].timer.Reset(rdt.timeout)
 	}
@@ -102,6 +117,9 @@ func (rdt *SelectiveRepeatUdpRdt) RdtSend(data []byte, addr net.Addr) (int, erro
 	return len(data), nil
 }
 
+// RdtRecv receives data from an unreliable data channel and returns it
+// if it is an ack message this function will not return and start from
+// "start" label
 func (rdt *SelectiveRepeatUdpRdt) RdtRecv() ([]byte, error) {
 	go func() {
 		if e := recover(); e != nil {
@@ -119,14 +137,17 @@ start:
 		return nil, err
 	}
 
+	// convert the packet form binary to packet.Packet
 	pkt, err := packet.UnMarshalPacket(buf)
 	if err != nil {
 		rdt.recvLock.Unlock()
 		return nil, err
 	}
+
+	// headers of the packet which is of type packet.PacketHeader
 	headers := pkt.Headers
 
-	// {false, 1, 3}
+	// handle ack packets
 	if headers.Ack {
 		// if it's the oldest unacked packet then we move recvBase forward
 		rdt.sendLock.Lock()
@@ -141,23 +162,19 @@ start:
 			rdt.sendBuffer[headers.Sequence%rdt.sendMaxBuf].timer.Reset(rdt.timeout)
 		}
 
-		//discarded, err := rdt.udt.UdtDiscard(packet.HeaderSize - 4)
-		//if err != nil {
-		//	fmt.Println("rdt.go: failed to discard packet packet: ", headers.Sequence, err)
-		//}
-		//
-		//fmt.Println("rdt.go:  discarded packet: ", headers.Sequence, discarded)
-
 		rdt.sendLock.Unlock()
 		utils.Printf("rdt.go: received ack for packet: %v\n", headers.Sequence)
+
+		// after we handled the ack go to "start" label since
+		// this is a control packet not the packet user is intrested
 		goto start
 	}
 
 	utils.Printf("rdt.go: received packet %d with header: %v\n", headers.Sequence, headers)
 
-
-	// add the packet to recvBuffer if not exists
 	rdt.recvLock.Lock()
+
+	// if the received packet is duplicate send an ack and discard the packet
 	if rdt.recvBuffer[headers.Sequence%rdt.recvMaxBuf].pkt.Headers.Sequence == headers.Sequence {
 		// If the packet exists discard the packet and send ack then goto start
 
@@ -183,8 +200,11 @@ start:
 
 	rdt.recvLock.Unlock()
 
-	// send ack
-	if headers.Sequence % 2 == 0 {
+	// to test retransmission for packets with sequence of odd
+	// we won't send the ack
+	if headers.Sequence%2 == 0 {
+
+		// send ack
 		utils.Printf("rdt.go: attempting to send ack for packet %d\n", headers.Sequence)
 		err = rdt.SendAck(headers.Sequence, addr)
 		if err != nil {
@@ -200,6 +220,7 @@ start:
 	return buf[packet.HeaderSize:], nil
 }
 
+// SendAck send acknowledgement for a packet with sequence "sequence" to addr
 func (rdt *SelectiveRepeatUdpRdt) SendAck(sequence uint32, addr net.Addr) error {
 	ack := packet.Packet{
 		Headers: packet.PacketHeader{
@@ -216,11 +237,15 @@ func (rdt *SelectiveRepeatUdpRdt) SendAck(sequence uint32, addr net.Addr) error 
 	return err
 }
 
+// Timeout will be called on timer interrupts since we don't care about
+// corrupted packets, and also the fact that lower lever protocols already
+// have some sort of error detection and correction so the only retransmission
+// is happening through timer interrupts in which each packet has one
 func (rdt *SelectiveRepeatUdpRdt) Timeout(sequence uint32) {
 	rdt.sendLock.Lock()
 	defer rdt.sendLock.Unlock()
 
-	rdt.sendBuffer[sequence % rdt.sendMaxBuf].timer.Reset(rdt.timeout)
+	rdt.sendBuffer[sequence%rdt.sendMaxBuf].timer.Reset(rdt.timeout)
 	utils.Printf("rdt.go: retransmitting packet %d\n", sequence)
 	// TODO store the binPkt instead of packet.Packet in packetWrapper
 	pktWrapper := rdt.sendBuffer[sequence%rdt.sendMaxBuf]
@@ -234,4 +259,3 @@ func (rdt *SelectiveRepeatUdpRdt) Timeout(sequence uint32) {
 		utils.Printf("rdt.go: something went wrong with packet retransmission %v\n", err)
 	}
 }
-

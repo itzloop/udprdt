@@ -5,16 +5,21 @@ import (
 	"net"
 )
 
+// UDT contains the basic functionality of an unrialble channel
 type UDT interface {
 	UdtSend([]byte, net.Addr) (int, error)
 	UdtRecv([]byte) (int, net.Addr, error)
 }
 
+// this an implementation of UDT with the use of UDP as the transpolt
+// layer. it has a udp connection which is a wrapper for udp socket,
+// its not really a connection
 type UdpUdt struct {
-	conn   *net.UDPConn
+	conn *net.UDPConn
 	//reader *bufio.Reader
 }
 
+// NewUdpUdt create a UdpUdt and takes a listen address
 func NewUdpUdt(listenAddr string) (UDT, error) {
 	laddr, err := net.ResolveUDPAddr("udp", listenAddr)
 	if err != nil {
@@ -27,12 +32,13 @@ func NewUdpUdt(listenAddr string) (UDT, error) {
 	}
 
 	return &UdpUdt{
-		conn:   conn,
+		conn: conn,
 		//reader: bufio.NewReader(conn),
 	}, nil
 
 }
 
+// UdtSend sends buf to addr
 func (udt *UdpUdt) UdtSend(buf []byte, addr net.Addr) (int, error) {
 	if _, ok := addr.(*net.UDPAddr); !ok {
 		return 0, fmt.Errorf("udt.go: addr must be of type: *net.UDPAddr")
@@ -44,6 +50,8 @@ func (udt *UdpUdt) UdtSend(buf []byte, addr net.Addr) (int, error) {
 
 	return len(buf), nil
 }
+
+// UdtRecv receives data from udp socket and fills buf
 func (udt *UdpUdt) UdtRecv(buf []byte) (int, net.Addr, error) {
 	_, addr, err := udt.conn.ReadFromUDP(buf)
 	if err != nil {
